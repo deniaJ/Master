@@ -22,7 +22,8 @@ using namespace std;
 #define DATA_WATT     6 // Watt ** 0 à 1048575 (20bits)
 #define DATA_HUMIDITY 7 // Pourcentage humidité ** 0 à 100% (12bits)
 #define DATA_PRESSION 8 // Pression en hpa 0 à 4095 (12bits)
-
+#define DATA_HALF 9
+#define DATA_INT 10
 
 #define CMD_LINK  0 //Link a node to the master 
 #define CMD_ON    1 //Send a ON command to node data = N° output
@@ -106,7 +107,7 @@ public:
 
 	// add TYPE_ETAT data
 	void addData(int type,int data);
-
+	void addData(int index, float in);
 	// add TYPE_CMD data
 	void addCmd(int type,int data);
 
@@ -125,7 +126,6 @@ protected:
 	// Crée une pulsation haute de 310µs suivie d'une pulsation basse représentative du bit à envoyer
 	void sendBit(bool b);
 
-
 	// Compare le signal reçu au signal de référence
 	bool checkSignal();
 
@@ -135,15 +135,11 @@ protected:
 	// get current time in usec
 	int getTime();
 	
-
-
-
 	// Calcule 2^"power"
 	unsigned long power2(int power);
 
 	// Conversion décimal vers tableau de binaires
 	void itob(unsigned long integer, int start, int length);
-
 
 	// Affiche le contenue des trames reçues
 	void printFrame(Frame_t & trame);

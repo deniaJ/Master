@@ -12,6 +12,119 @@ using namespace std;
 
 #define TIME_OUT_ACK  5000000 //microsecondl
 
+typedef unsigned int uint;
+
+union _FP32
+{
+    uint u;
+    float f;
+    struct
+    {
+        uint Mantissa : 23;
+        uint Exponent : 8;
+        uint Sign : 1;
+    };
+};
+
+union _FP16
+{
+    unsigned short u;
+    struct
+    {
+        uint Mantissa : 10;
+        uint Exponent : 5;
+        uint Sign : 1;
+    };
+};
+
+typedef union _FP32 FP32;
+typedef union _FP16 FP16;
+
+static FP32 half_to_float_full(FP16 h)
+{
+    FP32 o = { 0 };
+
+    // From ISPC ref code
+    if (h.Exponent == 0 && h.Mantissa == 0) // (Signed) zero
+        o.Sign = h.Sign;
+    else
+    {
+        if (h.Exponent == 0) // Denormal (will convert to normalized)
+        {
+            // Adjust mantissa so it's normalized (and keep track of exp adjust)
+            int e = -1;
+            uint m = h.Mantissa;
+            do
+            {
+                e++;
+                m <<= 1;
+            } while ((m & 0x400) == 0);
+
+            o.Mantissa = (m & 0x3ff) << 13;
+            o.Exponent = 127 - 15 - e;
+            o.Sign = h.Sign;
+        }
+        else if (h.Exponent == 0x1f) // Inf/NaN
+        {
+            // NOTE: It's safe to treat both with the same code path by just truncating
+            // lower Mantissa bits in NaNs (this is valid).
+            o.Mantissa = h.Mantissa << 13;
+            o.Exponent = 255;
+            o.Sign = h.Sign;
+        }
+        else // Normalized number
+        {
+            o.Mantissa = h.Mantissa << 13;
+            o.Exponent = 127 - 15 + h.Exponent;
+            o.Sign = h.Sign;
+        }
+    }
+
+    return o;
+}
+
+static FP16 float_to_half_full(FP32 f)
+{
+    FP16 o = { 0 };
+
+    // Based on ISPC reference code (with minor modifications)
+    if (f.Exponent == 0) // Signed zero/denormal (which will underflow)
+        o.Exponent = 0;
+    else if (f.Exponent == 255) // Inf or NaN (all exponent bits set)
+    {
+        o.Exponent = 31;
+        o.Mantissa = f.Mantissa ? 0x200 : 0; // NaN->qNaN and Inf->Inf
+    }
+    else // Normalized number
+    {
+        // Exponent unbias the single, then bias the halfp
+        int newexp = f.Exponent - 127 + 15;
+        if (newexp >= 31) // Overflow, return signed infinity
+            o.Exponent = 31;
+        else if (newexp <= 0) // Underflow
+        {
+            if ((14 - newexp) <= 24) // Mantissa might be non-zero
+            {
+                uint mant = f.Mantissa | 0x800000; // Hidden 1 bit
+                o.Mantissa = mant >> (14 - newexp);
+                if ((mant >> (13 - newexp)) & 1) // Check for rounding
+                    o.u++; // Round, might overflow into exp bit, but this is OK
+            }
+        }
+        else
+        {
+            o.Exponent = newexp;
+            o.Mantissa = f.Mantissa >> 13;
+            if (f.Mantissa & 0x1000) // Check for rounding
+                o.u++; // Round, might overflow to inf, this is OK
+        }
+    }
+
+    o.Sign = f.Sign;
+    return o;
+}
+
+
 
 extern void scheduler_realtime();
 extern void scheduler_standard ();
@@ -430,7 +543,7 @@ int protocolRF::extractData(int index,int &itype,int &ivalue,uint8_t* pBuffer /*
 			break;	
 
 			// 20 bits no signed
-		case DATA_WATT  :
+		case DATA_WATT:
 			ivalue=(*ptr&0x0F)<<16;
 			ptr++;
 			ivalue+=(*ptr)<<8;
@@ -439,6 +552,16 @@ int protocolRF::extractData(int index,int &itype,int &ivalue,uint8_t* pBuffer /*
 			ptr++;
 			iNbByteRest-=3;
 			break;	
+		case DATA_HALF:
+			FP16 in;
+			FP32 out;
+			in.u = (*ptr&0x0F)<<16;
+			ptr++;
+			in.u += (*ptr)<<8;
+			ptr++;
+			out = half_to_float_full(in);
+			YDLE_DEBUG << "Float value is : " << out.f;
+			break;
 		}
 
 		if (index==iCurrentValueIndex)
@@ -539,7 +662,7 @@ void protocolRF::addData(int type,int data)
 		break;	
 
 		// 20 bits no signed
-	case DATA_WATT  :
+	case DATA_WATT:
 		if (m_sendframe.taille<27)
 		{
 			m_sendframe.taille+=3;
@@ -550,12 +673,34 @@ void protocolRF::addData(int type,int data)
 		}
 		else
 			YDLE_WARN << "invalid trame len in addData";
-		break;	
+		break;
 	}
 
 }
 
 
+void protocolRF::addData(int index, float in){
+	int oldindex = m_sendframe.taille;
+
+	// Conversion to half type
+	FP32 f;
+	f.f = in;
+	FP16 res;
+	res = float_to_half_full(f);
+
+	// Copy bits in the payload
+	// Half is 16bits so 2 bytes
+
+	for(int i = 15; i >= 8; --i){
+		m_sendframe.data[oldindex] = res.u & (1<<i);
+	}
+	++oldindex;
+	for(int i = 7; i >= 0; --i){
+		m_sendframe.data[oldindex] = res.u & (1<<i);
+	}
+	m_sendframe.taille += 2;
+
+}
 // ----------------------------------------------------------------------------
 /**
 	   Function: pll
